@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="./streamlit-component-lib.js"></script>
+    <style>
+      html, body { margin: 0; padding: 0; background: transparent; }
+      #focus {
+        width: 100%;
+        border: 1px dashed #2ecc71;
+        border-radius: 8px;
+        background: #0e1117;
+        color: #d0d0d0;
+        padding: 10px 12px;
+        font: 0.85rem system-ui, sans-serif;
+        text-align: left;
+        cursor: pointer;
+      }
+      #focus:focus {
+        outline: 2px solid #2ecc71;
+        border-style: solid;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="focus" type="button">
+      Keyboard armed — click here, then use WASD or arrow keys
+    </button>
+    <script>
+      const KEY_MAP = {
+        ArrowUp: "up",
+        ArrowDown: "down",
+        ArrowLeft: "left",
+        ArrowRight: "right",
+        w: "up",
+        W: "up",
+        s: "down",
+        S: "down",
+        a: "left",
+        A: "left",
+        d: "right",
+        D: "right",
+      };
+
+      let lastKey = "";
+      let lastTime = 0;
+
+      function sendKey(name) {
+        const now = Date.now();
+        if (name === lastKey && now - lastTime < 70) return;
+        lastKey = name;
+        lastTime = now;
+        Streamlit.setComponentValue({ key: name, t: now });
+      }
+
+      function onKeyDown(event) {
+        const name = KEY_MAP[event.key];
+        if (!name) return;
+        event.preventDefault();
+        event.stopPropagation();
+        sendKey(name);
+      }
+
+      function onRender() {
+        const btn = document.getElementById("focus");
+        btn.onclick = () => btn.focus();
+        window.removeEventListener("keydown", onKeyDown);
+        window.addEventListener("keydown", onKeyDown);
+        btn.focus();
+        Streamlit.setFrameHeight(52);
+      }
+
+      Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+      Streamlit.setComponentReady();
+      Streamlit.setFrameHeight(52);
+    </script>
+  </body>
+</html>
