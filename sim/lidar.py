@@ -12,7 +12,7 @@ from .maze import Agent, Maze
 @dataclass(frozen=True)
 class LidarConfig:
     n_rays: int = 180  # doubled vs original 90
-    max_range: float = 20.0  # covers the larger 41×41 map
+    max_range: float = 60.0  # reaches across the diagonal of the 41×41 map
     fov: float = 2.0 * np.pi  # full 360°
     step: float = 0.05
 

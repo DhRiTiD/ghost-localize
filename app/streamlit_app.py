@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
+import numpy as np
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,17 +15,10 @@ if str(ROOT) not in sys.path:
 from app.keyboard_control import keyboard_control
 from sim.lidar import LidarConfig, cast_lidar
 from sim.maze import MAZE_SIZE, Agent, Maze
-from sim.render import blank_explored, figure_god_and_ghost, integrate_scan
+from sim.render import blank_explored
 
 STEP = 0.5
-TURN = 0.25  # radians
-
-KEY_ACTIONS = {
-    "up": (STEP, 0.0),
-    "down": (-STEP, 0.0),
-    "left": (0.0, -TURN),
-    "right": (0.0, TURN),
-}
+TURN = 0.25
 
 
 def _init_state() -> None:
@@ -47,25 +40,44 @@ def _init_state() -> None:
         st.session_state.keyboard_enabled = False
     if "last_key_t" not in st.session_state:
         st.session_state.last_key_t = 0
+    if "pose_revision" not in st.session_state:
+        st.session_state.pose_revision = 0
+    if "map_revision" not in st.session_state:
+        st.session_state.map_revision = 0
 
 
 def _move(forward: float, dtheta: float) -> None:
     maze: Maze = st.session_state.maze
     st.session_state.agent = maze.try_move(st.session_state.agent, forward, dtheta)
+    st.session_state.pose_revision += 1
 
 
-def _apply_keyboard_event(event) -> None:
+def _apply_keyboard_event(event, maze: Maze) -> None:
     if not event or not isinstance(event, dict):
         return
-    name = event.get("key")
     t = event.get("t", 0)
-    if name not in KEY_ACTIONS:
+    if not t or t == st.session_state.last_key_t:
         return
-    if t and t == st.session_state.last_key_t:
+    pose = event.get("pose")
+    if not isinstance(pose, dict):
         return
+    try:
+        x, y, theta = (float(pose[name]) for name in ("x", "y", "theta"))
+        explored = np.asarray(event["explored"], dtype=np.int8)
+    except (KeyError, TypeError, ValueError):
+        st.error("Keyboard control returned an invalid pose or map snapshot.")
+        return
+    if (
+        not np.isfinite((x, y, theta)).all()
+        or not maze.is_free(x, y)
+        or explored.shape != maze.grid.shape
+        or not np.isin(explored, (-1, 0, 1)).all()
+    ):
+        st.error("Keyboard control returned an invalid pose or map snapshot.")
+        return
+    st.session_state.agent = Agent(x, y, theta)
+    st.session_state.explored = explored
     st.session_state.last_key_t = t
-    forward, dtheta = KEY_ACTIONS[name]
-    _move(forward, dtheta)
 
 
 st.set_page_config(page_title="Ghost Localize — God vs Ghost", layout="wide")
@@ -92,9 +104,7 @@ with st.sidebar:
         st.rerun()
 
     if st.session_state.keyboard_enabled:
-        st.caption("WASD or arrows · click the green box if keys are ignored")
-        event = keyboard_control(enabled=True, key="ghost_kb")
-        _apply_keyboard_event(event)
+        st.caption("Hold WASD or arrows · click the green box if keys are ignored")
     else:
         st.caption("Click **Enable keyboard control** to drive with the keyboard.")
 
@@ -114,38 +124,40 @@ with st.sidebar:
     if st.button("Reset pose", use_container_width=True):
         s = maze.start
         st.session_state.agent = Agent(s.x, s.y, s.theta)
+        st.session_state.pose_revision += 1
     if st.button("Clear ghost map", use_container_width=True):
         st.session_state.explored = blank_explored(maze)
+        st.session_state.map_revision += 1
 
     st.divider()
     st.header("LiDAR")
     n_rays = st.slider("Rays", 36, 360, 180, 6)
-    max_range = st.slider("Max range", 6.0, 40.0, 20.0, 0.5)
+    max_range = st.slider("Max range", 6.0, 60.0, 60.0, 0.5)
     show_rays = st.checkbox("Draw rays on god map", value=True)
 
-    agent = st.session_state.agent
+cfg = LidarConfig(n_rays=n_rays, max_range=max_range)
+event = keyboard_control(
+    maze=maze,
+    agent=st.session_state.agent,
+    explored=st.session_state.explored,
+    config=cfg,
+    enabled=st.session_state.keyboard_enabled,
+    show_rays=show_rays,
+    pose_revision=st.session_state.pose_revision,
+    map_revision=st.session_state.map_revision,
+    key="ghost_kb",
+)
+_apply_keyboard_event(event, maze)
+
+agent = st.session_state.agent
+with st.sidebar:
     st.divider()
     zone = maze.zone_at(agent.x, agent.y) or "—"
     st.metric("Zone", zone)
     st.write(f"pose: x={agent.x:.2f}, y={agent.y:.2f}, θ={agent.theta:.2f} rad")
 
-agent = st.session_state.agent
-cfg = LidarConfig(n_rays=n_rays, max_range=max_range)
-scan = cast_lidar(maze, agent, cfg)
-st.session_state.explored = integrate_scan(st.session_state.explored, maze, agent, scan)
-
-fig = figure_god_and_ghost(
-    maze,
-    agent,
-    scan,
-    explored=st.session_state.explored,
-    ghost_pose=agent,
-    show_rays_on_god=show_rays,
-)
-st.pyplot(fig, clear_figure=True)
-plt.close("all")
-
 st.info(
     "**Left (god):** full area, walls, teaching zones, true pose. "
-    "**Right (ghost):** same canvas in the dark — only free/hit cells from LiDAR accumulate as you move."
+    "**Right (ghost):** only free/hit cells from LiDAR accumulate as you move. "
+    "Hold a movement key to accelerate; release it to coast to a stop."
 )

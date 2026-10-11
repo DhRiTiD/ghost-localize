@@ -5,6 +5,7 @@
     <script src="./streamlit-component-lib.js"></script>
     <style>
       html, body { margin: 0; padding: 0; background: transparent; }
+      body { color: #d0d0d0; font: 0.85rem system-ui, sans-serif; }
       #focus {
         width: 100%;
         border: 1px dashed #2ecc71;
@@ -12,67 +13,305 @@
         background: #0e1117;
         color: #d0d0d0;
         padding: 10px 12px;
-        font: 0.85rem system-ui, sans-serif;
         text-align: left;
         cursor: pointer;
       }
-      #focus:focus {
-        outline: 2px solid #2ecc71;
-        border-style: solid;
-      }
+      #focus:focus { outline: 2px solid #2ecc71; border-style: solid; }
+      #maps { display: block; width: 100%; height: auto; margin-top: 8px; }
     </style>
   </head>
   <body>
-    <button id="focus" type="button">
-      Keyboard armed — click here, then use WASD or arrow keys
+    <button id="focus" type="button" tabindex="0">
+      Click to focus, then hold WASD or arrow keys to drive
     </button>
+    <canvas id="maps"></canvas>
     <script>
       const KEY_MAP = {
-        ArrowUp: "up",
-        ArrowDown: "down",
-        ArrowLeft: "left",
-        ArrowRight: "right",
-        w: "up",
-        W: "up",
-        s: "down",
-        S: "down",
-        a: "left",
-        A: "left",
-        d: "right",
-        D: "right",
+        ArrowUp: "forward", ArrowDown: "back",
+        ArrowLeft: "left", ArrowRight: "right",
+        w: "forward", W: "forward", s: "back", S: "back",
+        a: "left", A: "left", d: "right", D: "right",
       };
+      const canvas = document.getElementById("maps");
+      const ctx = canvas.getContext("2d");
+      const pressed = new Set();
+      let args = null;
+      let grid = [];
+      let zones = {};
+      let explored = new Int8Array(0);
+      let pose = { x: 0, y: 0, theta: 0 };
+      let hits = [];
+      let speed = 0;
+      let turnSpeed = 0;
+      let poseRevision = null;
+      let mapRevision = null;
+      let lastFrame = 0;
+      let lastScan = 0;
+      let lastReport = 0;
 
-      let lastKey = "";
-      let lastTime = 0;
+      function isFree(x, y) {
+        const col = Math.floor(x);
+        const row = Math.floor(y);
+        return row >= 0 && row < grid.length
+          && col >= 0 && col < grid[0].length
+          && grid[row][col] === 0;
+      }
 
-      function sendKey(name) {
-        const now = Date.now();
-        if (name === lastKey && now - lastTime < 70) return;
-        lastKey = name;
-        lastTime = now;
-        Streamlit.setComponentValue({ key: name, t: now });
+      function inBounds(x, y) {
+        return x >= 0 && y >= 0 && x < grid[0].length && y < grid.length;
+      }
+
+      function exploreRay(angle, range) {
+        const c = Math.cos(angle), s = Math.sin(angle);
+        for (let d = 0.05; d < range - 0.05; d += 0.05) {
+          const x = pose.x + c * d, y = pose.y + s * d;
+          if (!inBounds(x, y)) break;
+          const cell = Math.floor(y) * grid[0].length + Math.floor(x);
+          if (explored[cell] !== 1) explored[cell] = 0;
+        }
+        const hx = pose.x + c * range, hy = pose.y + s * range;
+        if (inBounds(hx, hy)) {
+          explored[Math.floor(hy) * grid[0].length + Math.floor(hx)] = 1;
+        }
+      }
+
+      function scan() {
+        hits = [];
+        const count = Math.max(1, args.n_rays);
+        for (let i = 0; i < count; i++) {
+          const angle = pose.theta - Math.PI
+            + (2 * Math.PI * i) / count;
+          let distance = 0, x = pose.x, y = pose.y;
+          while (distance < args.max_range) {
+            distance += 0.05;
+            x = pose.x + Math.cos(angle) * distance;
+            y = pose.y + Math.sin(angle) * distance;
+            if (!isFree(x, y)) break;
+          }
+          hits.push({ x, y, angle });
+          exploreRay(angle, distance);
+        }
+        if (inBounds(pose.x, pose.y)) {
+          explored[Math.floor(pose.y) * grid[0].length + Math.floor(pose.x)] = 0;
+        }
+      }
+
+      function approach(value, target, amount) {
+        if (value < target) return Math.min(value + amount, target);
+        return Math.max(value - amount, target);
+      }
+
+      function positionFree(x, y) {
+        const radius = 0.16;
+        for (let i = 0; i < 8; i++) {
+          const angle = i * Math.PI / 4;
+          if (!isFree(x + Math.cos(angle) * radius, y + Math.sin(angle) * radius)) {
+            return false;
+          }
+        }
+        return isFree(x, y);
+      }
+
+      function move(dt) {
+        const forward = Number(pressed.has("forward")) - Number(pressed.has("back"));
+        const turn = Number(pressed.has("right")) - Number(pressed.has("left"));
+        speed = approach(speed, forward * 4.0, 8.0 * dt);
+        turnSpeed = approach(turnSpeed, turn * 2.2, 5.0 * dt);
+        const steps = Math.max(1, Math.ceil(Math.abs(speed * dt) / 0.04));
+        const stepTime = dt / steps;
+        for (let i = 0; i < steps; i++) {
+          pose.theta += turnSpeed * stepTime;
+          const distance = speed * stepTime;
+          const nextX = pose.x + Math.cos(pose.theta) * distance;
+          const nextY = pose.y + Math.sin(pose.theta) * distance;
+          if (positionFree(nextX, nextY)) {
+            pose.x = nextX;
+            pose.y = nextY;
+          } else {
+            speed = 0;
+          }
+        }
+      }
+
+      function drawRobot(centerX, centerY, scale, color, glow) {
+        const x = centerX + pose.x * scale;
+        const y = centerY + pose.y * scale;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(pose.theta);
+        if (glow) {
+          ctx.fillStyle = "rgba(179, 136, 255, 0.22)";
+          ctx.beginPath(); ctx.arc(0, 0, scale * 0.65, 0, 2 * Math.PI); ctx.fill();
+        }
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(scale * 0.42, 0);
+        ctx.lineTo(-scale * 0.28, -scale * 0.26);
+        ctx.lineTo(-scale * 0.28, scale * 0.26);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function drawMap(x, y, size, ghost) {
+        const width = grid[0].length, height = grid.length;
+        const scale = size / width;
+        ctx.fillStyle = ghost ? "#050508" : "#f4f4f4";
+        ctx.fillRect(x, y, size, size);
+        if (!ghost) {
+          const colors = { symmetric: "#6aa6ff55", sparse: "#f0c14a55", rich: "#7dcea055" };
+          for (const [name, box] of Object.entries(zones)) {
+            ctx.fillStyle = colors[name] || "#ffffff00";
+            ctx.fillRect(x + box[0] * scale, y + box[1] * scale,
+              (box[2] - box[0] + 1) * scale, (box[3] - box[1] + 1) * scale);
+          }
+          ctx.fillStyle = "#1b1b1b";
+          for (let row = 0; row < height; row++) {
+            for (let col = 0; col < width; col++) {
+              if (grid[row][col]) ctx.fillRect(x + col * scale, y + row * scale, scale, scale);
+            }
+          }
+          if (args.show_rays) {
+            ctx.strokeStyle = "rgba(231, 76, 60, 0.24)";
+            ctx.lineWidth = Math.max(0.5, scale * 0.045);
+            ctx.beginPath();
+            for (const hit of hits) {
+              ctx.moveTo(x + pose.x * scale, y + pose.y * scale);
+              ctx.lineTo(x + hit.x * scale, y + hit.y * scale);
+            }
+            ctx.stroke();
+          }
+        } else {
+          for (let row = 0; row < height; row++) {
+            for (let col = 0; col < width; col++) {
+              const state = explored[row * width + col];
+              if (state === 0) ctx.fillStyle = "#1f2947";
+              else if (state === 1) ctx.fillStyle = "#d9e6ff";
+              else continue;
+              ctx.fillRect(x + col * scale, y + row * scale, scale, scale);
+            }
+          }
+          ctx.fillStyle = "#7fdbff";
+          for (const hit of hits) {
+            ctx.beginPath();
+            ctx.arc(x + hit.x * scale, y + hit.y * scale, Math.max(1.5, scale * 0.12), 0, 2 * Math.PI);
+            ctx.fill();
+          }
+        }
+        drawRobot(x, y, scale, ghost ? "#b388ff" : "#1a73e8", ghost);
+      }
+
+      function draw() {
+        const ratio = window.devicePixelRatio || 1;
+        const width = Math.max(320, canvas.clientWidth);
+        const height = Math.max(260, Math.min(520, width * 0.43));
+        if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
+          canvas.width = Math.round(width * ratio);
+          canvas.height = Math.round(height * ratio);
+          canvas.style.height = `${height}px`;
+        }
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        ctx.clearRect(0, 0, width, height);
+        const gap = 28, mapSize = Math.min((width - 3 * gap) / 2, height - 62);
+        const top = 38 + (height - 50 - mapSize) / 2;
+        const left = (width - (2 * mapSize + gap)) / 2;
+        ctx.font = "600 15px system-ui, sans-serif";
+        ctx.fillStyle = "#333";
+        ctx.textAlign = "center";
+        ctx.fillText("God mode — full map", left + mapSize / 2, 23);
+        ctx.fillStyle = "#ddd";
+        ctx.fillText("Ghost mode — LiDAR map", left + mapSize + gap + mapSize / 2, 23);
+        drawMap(left, top, mapSize, false);
+        drawMap(left + mapSize + gap, top, mapSize, true);
+        ctx.font = "12px system-ui, sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillStyle = "#666";
+        ctx.fillText("symmetric   sparse   rich", left, top + mapSize + 18);
+        ctx.fillStyle = "#aaa";
+        ctx.fillText(`pose: x=${pose.x.toFixed(2)}, y=${pose.y.toFixed(2)}, θ=${pose.theta.toFixed(2)} rad`,
+          left + mapSize + gap, top + mapSize + 18);
+      }
+
+      function moving() {
+        return pressed.size > 0 || Math.abs(speed) > 0.015 || Math.abs(turnSpeed) > 0.015;
+      }
+
+      function report(now) {
+        lastReport = now;
+        Streamlit.setComponentValue({
+          pose: { x: pose.x, y: pose.y, theta: pose.theta },
+          explored: Array.from(explored),
+          t: now,
+        });
+      }
+
+      function frame(now) {
+        if (!args) {
+          requestAnimationFrame(frame);
+          return;
+        }
+        if (lastFrame) move(Math.min(0.05, (now - lastFrame) / 1000));
+        lastFrame = now;
+        if (now - lastScan >= 100) {
+          scan();
+          lastScan = now;
+        }
+        draw();
+        if (moving() && now - lastReport >= 100) report(now);
+        requestAnimationFrame(frame);
       }
 
       function onKeyDown(event) {
-        const name = KEY_MAP[event.key];
-        if (!name) return;
+        const action = KEY_MAP[event.key];
+        if (!action || !args || !args.enabled) return;
         event.preventDefault();
         event.stopPropagation();
-        sendKey(name);
+        pressed.add(action);
       }
 
-      function onRender() {
-        const btn = document.getElementById("focus");
-        btn.onclick = () => btn.focus();
-        window.removeEventListener("keydown", onKeyDown);
-        window.addEventListener("keydown", onKeyDown);
-        btn.focus();
-        Streamlit.setFrameHeight(52);
+      function onKeyUp(event) {
+        const action = KEY_MAP[event.key];
+        if (!action) return;
+        pressed.delete(action);
       }
 
+      function onRender(event) {
+        args = event.detail.args;
+        grid = args.grid;
+        zones = args.zones;
+        if (poseRevision !== args.pose_revision) {
+          poseRevision = args.pose_revision;
+          pose = { ...args.agent };
+          speed = 0;
+          turnSpeed = 0;
+          pressed.clear();
+        }
+        if (mapRevision !== args.map_revision) {
+          mapRevision = args.map_revision;
+          explored = Int8Array.from(args.explored.flat());
+          lastScan = 0;
+        } else if (explored.length === 0) {
+          explored = Int8Array.from(args.explored.flat());
+        }
+        if (!args.enabled) {
+          pressed.clear();
+          speed = 0;
+          turnSpeed = 0;
+        }
+        document.getElementById("focus").textContent = args.enabled
+          ? "Keyboard enabled — hold WASD or arrow keys to drive"
+          : "Keyboard disabled — use the sidebar controls to move";
+        document.getElementById("focus").onclick = () => document.getElementById("focus").focus();
+        document.getElementById("focus").focus();
+        Streamlit.setFrameHeight(52 + Math.min(520, Math.max(260, canvas.clientWidth * 0.43)) + 8);
+      }
+
+      window.addEventListener("keydown", onKeyDown);
+      window.addEventListener("keyup", onKeyUp);
+      window.addEventListener("blur", () => pressed.clear());
       Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
       Streamlit.setComponentReady();
-      Streamlit.setFrameHeight(52);
+      requestAnimationFrame(frame);
     </script>
   </body>
 </html>
