@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.keyboard_control import keyboard_control
-from sim.lidar import LidarConfig, cast_lidar
+from sim.lidar import LidarConfig
 from sim.maze import MAZE_SIZE, Agent, Maze
 from sim.render import blank_explored
 
@@ -44,6 +44,14 @@ def _init_state() -> None:
         st.session_state.pose_revision = 0
     if "map_revision" not in st.session_state:
         st.session_state.map_revision = 0
+    if "selected_maze" not in st.session_state:
+        st.session_state.selected_maze = "Teaching maze"
+    if "active_maze" not in st.session_state:
+        st.session_state.active_maze = getattr(
+            st.session_state.maze, "name", "Teaching maze"
+        )
+    if "random_room_seed" not in st.session_state:
+        st.session_state.random_room_seed = 0
 
 
 def _move(forward: float, dtheta: float) -> None:
@@ -54,6 +62,8 @@ def _move(forward: float, dtheta: float) -> None:
 
 def _apply_keyboard_event(event, maze: Maze) -> None:
     if not event or not isinstance(event, dict):
+        return
+    if event.get("maze_revision") != st.session_state.pose_revision:
         return
     t = event.get("t", 0)
     if not t or t == st.session_state.last_key_t:
@@ -88,10 +98,42 @@ st.caption(
 )
 
 _init_state()
-maze: Maze = st.session_state.maze
 
 with st.sidebar:
     st.header("Controls")
+    selected_maze = st.selectbox(
+        "Maze layout",
+        Maze.NAMES,
+        key="selected_maze",
+    )
+    if selected_maze != st.session_state.active_maze:
+        if selected_maze == "Random room":
+            seed = int(np.random.SeedSequence().generate_state(1)[0])
+            st.session_state.random_room_seed = seed
+            maze = Maze.random_room(seed)
+        else:
+            maze = Maze.named(selected_maze)
+        st.session_state.maze = maze
+        st.session_state.active_maze = selected_maze
+        st.session_state.agent = Agent(
+            maze.start.x, maze.start.y, maze.start.theta
+        )
+        st.session_state.explored = blank_explored(maze)
+        st.session_state.pose_revision += 1
+        st.session_state.map_revision += 1
+    maze: Maze = st.session_state.maze
+    if selected_maze == "Random room":
+        st.caption(f"Room seed: {maze.seed}")
+        if st.button("Generate another random room", width="stretch"):
+            st.session_state.random_room_seed = (int(maze.seed) + 1) % (2**32)
+            maze = Maze.random_room(st.session_state.random_room_seed)
+            st.session_state.maze = maze
+            st.session_state.agent = Agent(
+                maze.start.x, maze.start.y, maze.start.theta
+            )
+            st.session_state.explored = blank_explored(maze)
+            st.session_state.pose_revision += 1
+            st.session_state.map_revision += 1
 
     if st.button(
         "Disable keyboard control"
@@ -145,6 +187,8 @@ event = keyboard_control(
     show_rays=show_rays,
     pose_revision=st.session_state.pose_revision,
     map_revision=st.session_state.map_revision,
+    maze_revision=st.session_state.pose_revision,
+    maze_name=maze.name,
     key="ghost_kb",
 )
 _apply_keyboard_event(event, maze)

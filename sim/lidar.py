@@ -23,6 +23,7 @@ class LidarScan:
     ranges: np.ndarray  # meters / cell units
     hit_x: np.ndarray
     hit_y: np.ndarray
+    hit_mask: np.ndarray  # True when the ray hit an occupied cell, not the range limit
 
     @property
     def range_image(self) -> np.ndarray:
@@ -42,25 +43,31 @@ def cast_lidar(maze: Maze, agent: Agent, config: LidarConfig | None = None) -> L
     ranges = np.empty(cfg.n_rays, dtype=np.float64)
     hit_x = np.empty(cfg.n_rays, dtype=np.float64)
     hit_y = np.empty(cfg.n_rays, dtype=np.float64)
+    hit_mask = np.zeros(cfg.n_rays, dtype=np.bool_)
 
     for i, ang in enumerate(angles):
         c, s = float(np.cos(ang)), float(np.sin(ang))
         dist = 0.0
         x, y = agent.x, agent.y
-        hit = False
         while dist < cfg.max_range:
-            dist += cfg.step
+            dist = min(dist + cfg.step, cfg.max_range)
             x = agent.x + c * dist
             y = agent.y + s * dist
             if not maze.is_free(x, y):
                 ranges[i] = dist
                 hit_x[i] = x
                 hit_y[i] = y
-                hit = True
+                hit_mask[i] = True
                 break
-        if not hit:
+        if not hit_mask[i]:
             ranges[i] = cfg.max_range
             hit_x[i] = agent.x + c * cfg.max_range
             hit_y[i] = agent.y + s * cfg.max_range
 
-    return LidarScan(angles=angles, ranges=ranges, hit_x=hit_x, hit_y=hit_y)
+    return LidarScan(
+        angles=angles,
+        ranges=ranges,
+        hit_x=hit_x,
+        hit_y=hit_y,
+        hit_mask=hit_mask,
+    )

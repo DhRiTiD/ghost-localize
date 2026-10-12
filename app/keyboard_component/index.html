@@ -61,7 +61,7 @@
         return x >= 0 && y >= 0 && x < grid[0].length && y < grid.length;
       }
 
-      function exploreRay(angle, range) {
+      function exploreRay(angle, range, hit) {
         const c = Math.cos(angle), s = Math.sin(angle);
         for (let d = 0.05; d < range - 0.05; d += 0.05) {
           const x = pose.x + c * d, y = pose.y + s * d;
@@ -70,7 +70,7 @@
           if (explored[cell] !== 1) explored[cell] = 0;
         }
         const hx = pose.x + c * range, hy = pose.y + s * range;
-        if (inBounds(hx, hy)) {
+        if (hit && inBounds(hx, hy)) {
           explored[Math.floor(hy) * grid[0].length + Math.floor(hx)] = 1;
         }
       }
@@ -81,15 +81,18 @@
         for (let i = 0; i < count; i++) {
           const angle = pose.theta - Math.PI
             + (2 * Math.PI * i) / count;
-          let distance = 0, x = pose.x, y = pose.y;
+          let distance = 0, x = pose.x, y = pose.y, hit = false;
           while (distance < args.max_range) {
-            distance += 0.05;
+            distance = Math.min(distance + 0.05, args.max_range);
             x = pose.x + Math.cos(angle) * distance;
             y = pose.y + Math.sin(angle) * distance;
-            if (!isFree(x, y)) break;
+            if (!isFree(x, y)) {
+              hit = true;
+              break;
+            }
           }
-          hits.push({ x, y, angle });
-          exploreRay(angle, distance);
+          hits.push({ x, y, angle, hit });
+          exploreRay(angle, distance, hit);
         }
         if (inBounds(pose.x, pose.y)) {
           explored[Math.floor(pose.y) * grid[0].length + Math.floor(pose.x)] = 0;
@@ -175,7 +178,7 @@
             ctx.strokeStyle = "rgba(231, 76, 60, 0.24)";
             ctx.lineWidth = Math.max(0.5, scale * 0.045);
             ctx.beginPath();
-            for (const hit of hits) {
+            for (const hit of hits.filter((point) => point.hit)) {
               ctx.moveTo(x + pose.x * scale, y + pose.y * scale);
               ctx.lineTo(x + hit.x * scale, y + hit.y * scale);
             }
@@ -218,9 +221,9 @@
         ctx.font = "600 15px system-ui, sans-serif";
         ctx.fillStyle = "#333";
         ctx.textAlign = "center";
-        ctx.fillText("God mode — full map", left + mapSize / 2, 23);
+        ctx.fillText(`${args.maze_name} — God mode`, left + mapSize / 2, 23);
         ctx.fillStyle = "#ddd";
-        ctx.fillText("Ghost mode — LiDAR map", left + mapSize + gap + mapSize / 2, 23);
+        ctx.fillText(`${args.maze_name} — Ghost mode`, left + mapSize + gap + mapSize / 2, 23);
         drawMap(left, top, mapSize, false);
         drawMap(left + mapSize + gap, top, mapSize, true);
         ctx.font = "12px system-ui, sans-serif";
@@ -240,7 +243,9 @@
         lastReport = now;
         Streamlit.setComponentValue({
           pose: { x: pose.x, y: pose.y, theta: pose.theta },
-          explored: Array.from(explored),
+          explored: Array.from({ length: grid.length }, (_, row) =>
+            Array.from(explored.slice(row * grid[0].length, (row + 1) * grid[0].length))),
+          maze_revision: args.maze_revision,
           t: now,
         });
       }

@@ -28,6 +28,8 @@ def keyboard_control(
     show_rays: bool,
     pose_revision: int,
     map_revision: int,
+    maze_revision: int,
+    maze_name: str,
     key: Optional[str] = None,
 ) -> Any:
     """Render the live local map and return periodic browser pose/map snapshots."""
@@ -44,4 +46,6 @@ def keyboard_control(
         show_rays=show_rays,
         pose_revision=pose_revision,
         map_revision=map_revision,
+        maze_revision=maze_revision,
+        maze_name=maze_name,
     )

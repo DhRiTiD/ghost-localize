@@ -36,7 +36,7 @@ def integrate_scan(
 ) -> np.ndarray:
     """Carve free space along rays and mark hit cells occupied (ghost map memory)."""
     out = explored.copy()
-    for ang, rng in zip(scan.angles, scan.ranges):
+    for ang, rng, hit in zip(scan.angles, scan.ranges, scan.hit_mask):
         c, s = float(np.cos(ang)), float(np.sin(ang))
         dist = 0.0
         while dist < rng - step:
@@ -50,7 +50,7 @@ def integrate_scan(
                 out[row, col] = FREE
         hx = agent.x + c * rng
         hy = agent.y + s * rng
-        if maze.in_bounds(hx, hy):
+        if hit and maze.in_bounds(hx, hy):
             col, row = maze.cell(hx, hy)
             out[row, col] = OCCUPIED
     # mark agent cell free
